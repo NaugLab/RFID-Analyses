@@ -1,0 +1,400 @@
+---
+title: "RFID Raw Analysis"
+author: "Julian Cassano"
+date: "1/5/2021"
+output: html_document
+---
+
+#Libraries
+```{r}
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(plyr)
+library(lubridate)
+library(hms)
+library(feedr)
+library(devtools)
+library(stringr)
+library(qdap)
+library(ggpubr)
+library(rlang)
+library(feedr)
+library(corrplot)
+library(car)
+library(MASS)
+library(hrbrthemes)
+install.packages("devtools") # if not already installed
+devtools::install_github("animalnexus/feedr")
+install.packages("feedr")
+```
+
+#Read in raw csv outputs
+```{r}
+in.data <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID CSV/RFID_raw_output_2021.CSV")%>%
+  select(Address, UID, UTCTime)%>%
+  relocate(UTCTime)%>%
+  rename("time" = "UTCTime",
+         "scanner" = "Address",
+         "RFID" = "UID")
+View(in.data)
+
+#Change characters to factors
+in.data$UTCTime<-as.factor(in.data$UTCTime)
+in.data$UID<-as.factor(in.data$UID)
+#Write data file
+write_delim(in.data, "/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID CSV/RFID_raw_master_2021.txt", quote = FALSE)
+write.table(in.data, "/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID CSV/RFID_raw_master_2021.txt", quote = FALSE)
+write_csv2(in.data, "/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID CSV/RFID_raw_master_2021.txt")
+write_tsv(in.data, "/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID CSV/RFID_raw_master_2021.txt")
+#check unique rows 
+length(unique(in.data$UID))
+```
+
+Filter out extra pings using the "feedr" package and prepping dataset for the "Track a Forager" software. This is necessary if your data set is too large to feed into the "track a forager" software (over 250MB)
+```{r}
+#read in master data with proper column headingd for "feedr" package
+raw.data <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/RFID Analysis/RFID 2020/RFID 2020/RFID_raw_master.csv") %>%
+  dplyr::rename("time" = "UTCTime",
+         "logger_id" = "Address",
+         "animal_id" = "UID") %>%
+ dplyr:: mutate(time = lubridate::mdy_hms(time))
+View(raw.data)
+
+#filter data using feedr package (At this point, we still have 1.3 million lines of data)
+raw.data <- load_format(raw.data) # Doesnt change the number of entries
+#Collapses consecutive reads from a single bee, within 1s (bw = 1) of each other: provides a start time and end time for each collapsed segment. 
+filtered.data<-visits(r = raw.data, bw = 1, allow_imp = TRUE) #This filters to 133,193 data entries
+View(filtered.data)
+
+#Rename columns for Track-a-Forager Format
+filtered.TAF <- filtered.data %>%
+  dplyr::rename("UTCTime" ="start",
+        "Address" = "logger_id",
+        "UID" =  "animal_id" ) %>%
+  dplyr::select("UTCTime", "Address", "UID")
+
+View(filtered.TAF)
+    
+#All the different ways to change date format
+  #mutate(UTCTime = format(Sys.time(), "%m/%d/%Y %H:%M:%S"))
+  #utate(UTCTime =lubridate::mdy_hms(UTCTime))
+  #mutate(UTCTime = as.POSIXct(UTCTime,"%m/%d/%Y %H:%M:%S"))
+  #filtered.TAF$UTCTime<-strptime(filtered.TAF$UTCTime,"%m/%d/%Y %H:%M:%S")
+
+#Change variabbles to factors
+filtered.TAF$UTCTime<-as.factor(filtered.TAF$UTCTime)
+filtered.TAF$UID<-as.factor(filtered.TAF$UID)
+head(filtered.TAF)
+
+#Different ways to write the data frame
+write_csv2(filtered.TAF, "RFID_filtered.csv")
+write_delim(filtered.TAF, "RFID_filtered.txt")
+write.table(filtered.TAF, "RFID_filtered.txt", quote = F, row.names = F)
+write_tsv(filtered.TAF, "RFID_filtered.txt")
+#Run filtered.TAF through Track a Forager Software
+```
+
+#Read in RFID tracking data
+```{r}
+#read in cohort data
+##These are the data sheets that you make while tagging bees
+C1 <- read_csv("./RFID_tracking/C1.csv")
+C3 <- read_csv("./RFID_tracking/C3.csv")
+C4 <- read_csv("./RFID_tracking/C4.csv")
+C5 <- read_csv("./RFID_tracking/C5.csv")%>%
+  select(-X6, -X7, -X8, -X9)
+C6 <- read_csv("./RFID_tracking/C6.csv")
+C9 <- read_csv("./RFID_tracking/C9.csv")%>%
+  select(-X6, -X7, -X8, -X9)
+#combine cohort data
+RFID.tracking <- rbind(C1, C3, C4, C5, C6, C9)
+#Clean mistakes
+RFID.tracking[1,1] <- "BE642266080012E0"
+RFID.tracking[4,1] <- "B6672266080012E0"
+RFID.tracking[5,1] <- "C8662266080012E0"
+
+
+#convert Date column as column type Date. 
+RFID.tracking <- RFID.tracking%>%
+  mutate(tagged_date = as.Date(Date, tryFormats = c("%m/%d/%Y")))%>%
+  mutate(RFID = sub("\\s+$", "", gsub('(.{2})', '\\1 ', RFID)))
+year(RFID.tracking$tagged_date) <- 2021
+View(RFID.tracking)
+write_csv(RFID.tracking, "RFID.tracking.CSV")
+```
+
+ #START HERE: Track-a-Forager Results (4 data frames)
+```{r}
+#in.outs
+in.out <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_inouts.TXT")
+
+#trip.lengths
+trip.lengths <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_lengthsTripsFlights.TXT")
+
+#trips
+trips <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_trips.TXT")
+
+#RFID.trips
+RFID.trips <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_tripsPerRFID.TXT")
+
+#RFID Tracking
+RFID.tracking <- read_csv("RFID.tracking.CSV")
+```
+
+#Lifespan (AGE)
+```{r}
+#trips
+trips <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_trips.TXT")
+#extracting date in %m/%d/%Y
+trips$time <- as.Date(trips$time, tryFormats = c("%m/%d/%Y"))
+View(trips)
+
+join.age <- left_join(trips, RFID.tracking)%>%
+  group_by(`Trip ID`)%>%
+  filter(row_number()==1)%>%
+  mutate(age.at.trip = difftime(time,tagged_date,units=c("days"))) #Create new column that calculates the difference from when the bee was first tagged (tagged_date) to when it was last pinged... effectively calculating age
+View(join.age)
+
+ls <- join.age%>%
+  group_by(RFID)%>%
+  mutate(lifespan = max(age.at.trip))%>%
+  filter(row_number()==1)%>%
+  drop_na(lifespan)
+View(ls)
+
+write_csv(ls, "lifespan.CSV")
+```
+
+##Visualize (Histogram)
+```{r}
+ls.freq <- ggplot(ls, aes(lifespan)) +
+    geom_histogram() +
+    theme_pubr() +
+    labs(x = "Lifespan")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+ls.freq 
+```
+
+#Trips per bee
+```{r}
+RFID.trips <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_tripsPerRFID.TXT")%>%
+  dplyr::rename(trips_per_bee = `number of trips`)
+write_csv(RFID.trips, "RFID.trips.CSV")
+```
+##Visualize
+```{r}
+freq.hist.trips <- ggplot(RFID.trips, aes(trips_per_bee)) +
+    geom_histogram() +
+    theme_pubr() +
+    labs(x = "Number of Trips")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+freq.hist.trips 
+```
+#Age of Onset of Foraging (AOF)
+##Cleaning and prepping data
+```{r}
+install.packages("aof")
+library(aof)
+#Example Data set from Requier et al. 2020
+View(dataExample)
+AOF.test <- aof(name = dataExample$name, Age = dataExample$Age, x = dataExample$Number)
+View(AOF.test)
+
+#join `trips` and `trip.lengths` by trip ID
+RFID.tracking <- read_csv("RFID.tracking.CSV")
+aof.join <- inner_join(trips, trip.lengths)
+aof.join <- inner_join(trips, trip.lengths) %>%
+  dplyr::select("time", "RFID", "Trip ID", "Trip length (in seconds)")%>%
+  dplyr::mutate(time = as.Date(mdy_hms(aof.join$time)))%>% #format Date
+  dplyr::rename(ping_date = time,
+                Trip_ID = `Trip ID`,
+                RFID = RFID,
+                Trip_lengths_s = `Trip length (in seconds)`)%>%
+  dplyr::group_by(Trip_ID)%>% #group the data by Trip_ID
+  dplyr::filter(row_number()==1) #This filters out the first row of each "group".
+
+#add tagged_date via pheno.key
+View(aof.join)
+aof.input <- left_join(RFID.tracking, aof.join, by ="RFID")%>%
+  drop_na()
+
+aof.input <- aof.input%>%
+   dplyr::mutate(age = difftime(aof.input$ping_date, 
+                               aof.input$tagged_date, 
+                               units=c("days"))) #this line calculates age of bee for each trip
+
+aof.input$age <- as.numeric(sub(" days", " ", aof.input$age))
+
+aof.input <- aof.input%>%
+  dplyr::rename(Age = age)%>%
+  dplyr::select("RFID", "Age")%>%
+  group_by(RFID, Age)%>%
+  tally()%>%
+  drop_na()
+View(aof.input)
+aof.input$n <- as.numeric(aof.input$n)
+aof.input <- aof.input%>%
+   ungroup()
+str(aof.input)
+#Locating the bug in the code aka bad bee
+aof.input.test <- aof.input[160:613,]
+#Found it!... cut that shit out
+aof.input <- aof.input%>%
+  filter(RFID != "3E 51 31 06 09 00 12 E0")
+```
+##Calculate AOF using aof() fxn
+```{r}
+# run AOF package on aof.input
+require("bcpa")
+AOF <- aof(name = aof.input.$RFID, Age = aof.input$Age, x = aof.input$n) # takes a while
+View(AOF) 
+#clean AOF data set by only selecting rows that were able to calculate an AOF successfully
+AOF.clean <- AOF %>%
+  filter(!grepl('no.data',  AOF))%>%
+  filter(!grepl('not.enough.data', AOF))%>%
+  filter(!grepl('undetected', AOF))%>%
+  dplyr::rename(RFID = name)%>%
+  mutate(AOF = as.numeric(AOF))
+View(AOF.clean)
+
+
+#Write CSV AOF
+write_csv(AOF.clean, "AOF.CSV")
+```
+#Age at First Exit (AFE)
+```{r}
+join.AFE <- join.age%>%
+  group_by(RFID)%>%
+  mutate(AFE = min(age.at.trip))%>%
+  filter(row_number()==1)%>%
+  drop_na(AFE)
+View(join.AFE)
+
+age.first.exit <- join.AFE%>%
+  rename(first_ping = time)%>%
+  select(RFID, Number, tagged_date,  first_ping, AFE )
+#delete "days" trailing the number           
+age.first.exit$AFE <- sub("_days", "", age.first.exit$AFE)
+age.first.exit$AFE <- as.numeric(age.first.exit$AFE)
+```
+##Visualize
+```{r}
+freq.hist.AFE <- ggplot(age.first.exit , aes(AFE)) +
+    geom_histogram(binwidth=1) +
+    theme_pubr() +
+    labs(x = "AFE")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+freq.hist.AFE
+```
+#Average Length per Trip (minutes)
+```{r}
+trip.lengths <- read_tsv("./Track a forager output/Third attempt/NatJoin2_[1, 2]_lengthsTripsFlights.TXT")
+View(trip.lengths)
+
+avg.trip.length <- group_by(trip.lengths, RFID)%>%
+  dplyr::summarize(
+    trips = dplyr::n(),
+    mean = mean(`Trip length (in seconds)`)/60)
+View(avg.trip.length)
+
+avg.trip.length <- avg.trip.length%>%
+  filter(mean<400)
+
+write_csv(avg.trip.length, "avg.trip.length.CSV")
+```
+
+##Visualize
+```{r}
+freq.hist.trip.length <- ggplot(avg.trip.length, aes(mean)) +
+    geom_histogram(binwidth=10) +
+    theme_pubr() +
+    labs(x = "Avg Trip Length (min)")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+freq.hist.trip.length
+```
+
+#Put it together
+```{r}
+#lifespan
+ls <- read_csv("lifespan.CSV")%>%
+  dplyr::select(lifespan, RFID)
+View(ls)
+#aof
+aof <- read_csv("AOF.CSV")%>%
+  dplyr::select(AOF, RFID)
+View(aof)
+#trip length
+avg.trip.length <- read_csv("avg.trip.length.CSV")%>%
+  dplyr::select(mean, RFID)%>%
+  dplyr::rename(avg_trip_length = mean)
+View(avg.trip.length)
+#trips
+trips <- read_csv("RFID.trips.CSV")
+View(trips)
+#join data frames
+trips.join <- inner_join(avg.trip.length, trips, by = "RFID")
+ls.join <- left_join(trips.join, ls, by = "RFID")
+aof.join <- left_join(ls.join, aof, by = "RFID")
+#rename
+initial.join <- aof.join
+```
+#Foraging Days
+```{r}
+initial.join <- initial.join %>%
+  dplyr::mutate(foraging_days = lifespan - AOF)
+```
+##Visualize
+```{r}
+freq.hist.foraging.days <- ggplot(initial.join , aes(foraging_days)) +
+    geom_histogram(binwidth=0.5) +
+    theme_pubr() +
+    labs(x = "Foraging Days")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+freq.hist.foraging.days
+```
+#Trips per Day
+```{r}
+beh.join<- initial.join %>%
+  dplyr::mutate(trips_per_day = trips_per_bee/lifespan)
+```
+##Visualize
+```{r}
+freq.hist.trip.per.day <- ggplot(beh.join , aes(trips_per_day)) +
+    geom_histogram(binwidth=0.1) +
+    theme_pubr() +
+    labs(x = "Trips per Day")+
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+freq.hist.trip.per.day
+```
+#Write Final data
+```{r}
+#add tagged date back in
+final.join <- left_join(beh.join, RFID.tracking)
+final.join <- left_join(final.join, age.first.exit)
+
+write_csv(final.join, "Master.Data.Beh.CSV")
+```
+
+
+
+
+#Trips per day after AOF NEED TO FIGURE OUT HOW TO CALCULATE THIS
+```{r}
+#This calculates the number of trips per day by dividing the total number of trips by the number of foraging days (better way of getting trips per day)
+trips.per.day.foraging <- left_join(trips.per.day, foraging.days)%>%
+  dplyr::mutate(trips_per_day_foraging = number_of_trips/foraging_days)%>%
+  drop_na()
+View(trips.per.day.foraging)
+
+
+```
+
+
+
+
+
+
+
