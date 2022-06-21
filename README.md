@@ -1,4 +1,4 @@
-# Radio Frequency ID (RFID) data
+# Radio Frequency ID (RFID)
 ## Steps for analyzing RFID data
 1. Pull Raw XML (Maja) files from the storage device to your local computer.
 2. Convert XML files to CSV using python script (convert_XML_to_CSV.py)
