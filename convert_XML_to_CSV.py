@@ -41,4 +41,4 @@ for filepath in glob.iglob('*.xml'):
 df = pd.DataFrame(rows, columns=cols)
 
 # Writing dataframe to csv
-df.to_csv('RFID_raw_output_2021.csv', index=False)
+df.to_csv('RFID_raw_output_2022.csv', index=False)
