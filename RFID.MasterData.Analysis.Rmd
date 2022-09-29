@@ -1,0 +1,1247 @@
+---
+title: "PhysofAging"
+author: "Julian Cassano"
+date: "12/28/2021"
+output: html_document
+---
+
+#Libraries
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(lubridate)
+library(ggplot2)
+library(GGally)
+library(kableExtra)
+library(hrbrthemes)
+library(ggpubr)
+library(Hmisc)
+library(lmerTest)
+library(lme4)
+library(stats)
+library(MuMIn)
+library(reshape2)
+library(emmeans)
+library(car)
+library(rptR)
+library(scales)
+```
+
+#Data Wrangling
+##Read in and Clean Data
+```{r}
+#Read and clean data
+Weight.Data <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/FMR Raw/Exp1_RFID_MR/Summer21 _WeightData_RFID.CSV")%>%
+select("Cohort",	"Party"	, "Week",	`Tube Number`, "Number"	,`Bee Weight(g)`,	"Notes")%>%
+  dplyr::rename(Tube.Number = `Tube Number`,
+         Bee.Weight.g = `Bee Weight(g)`)
+#fix typos
+Weight.Data[5,3] <- "3"
+Weight.Data[6,3] <- "3"
+#Create an ID column that contains Cohort, Party, Week, and Tube Number
+Weight.Data <- Weight.Data%>%
+  dplyr::mutate(Cohort = as.factor(Cohort),
+                Party = as.factor(Party),
+                Week = as.factor(Week),
+                Tube.Number = as.factor(Tube.Number),
+                ID = paste(
+                    "C", Weight.Data$Cohort, 
+                    "_P", Weight.Data$Party, 
+                    "_W",Weight.Data$Week, 
+                    "_", Weight.Data$Tube.Number,
+                    sep = "")
+                )
+
+#Isolate ID and Number columns
+Weight.Data <- Weight.Data%>%
+  select("Number", "Bee.Weight.g", "ID")
+str(Weight.Data)
+View(Weight.Data)
+
+MR.Master <- read_csv("./Output/MR_Exp1_Master_Cleaned.CSV")
+View(MR.Master)
+
+#Combine weight data with MR data
+right.join <- right_join(Weight.Data, MR.Master, by = "ID")
+View(right.join)
+Exp1.data.final <- right.join%>%
+  mutate(meanVCO2perG = meanVCO2/Bee.Weight.g)%>%
+  drop_na()
+View(Exp1.data.final)
+
+#Write Data
+write_csv(Exp1.data.final, "Exp1.data.final.CSV")
+```
+
+##Initial Summary
+```{r}
+#Summary Rest vs Shake
+sum.treatment <- group_by(Exp1.data.final, Treatment)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean_VCO2perG = mean(meanVCO2perG),
+    sd_VCO2perG = mean(meanVCO2perG),
+    se_VCO2perG = sd(meanVCO2perG) / sqrt((length(meanVCO2perG))))
+View(sum.treatment)
+
+#Summary 4 groups Week vs Treatment
+sum.treatment.week <- group_by(Exp1.data.final, Treatment, Week)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean_VCO2perG = mean(meanVCO2perG),
+    sd_VCO2perG = mean(meanVCO2perG),
+    se_VCO2perG = sd(meanVCO2perG) / sqrt((length(meanVCO2perG))))
+View(sum.treatment.week)
+```
+
+##(START HERE) Combining Final data with RFID Tracking data
+```{r}
+#Read cleaned date
+Exp1.data.final <- read_csv("Exp1.data.final.CSV")
+#Read RFID tracking key
+RFID.tracking <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/RFID.tracking.CSV")%>%
+  rename(Number = tag_number)
+#Combine to form Master Data sheet
+Master.Data <- left_join(Exp1.data.final, RFID.tracking, by = "Number")%>%
+  select(-Date.x, -Cohort, -Party, -Bee, -count)
+```
+
+##Combining Final Data with RFID Behavior data 
+```{r}
+#Read in Behavioral Data
+Master.Data.Beh <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Experiment 1 RFID/Raw Data/RFID Raw Data/Master.Data.Beh.CSV")
+#Join Master Data and Behavioral Data
+Master.Data.All <- left_join(Master.Data, Master.Data.Beh, by = "RFID")%>%
+  rename(MR_type = Treatment)
+#clean dataframe
+Master.Data.groups <- Master.Data.All%>%
+  select(Number.x,
+         Week,
+         MR_type,
+         meanVCO2perG,
+         lifespan,
+         trips_per_day,
+         `AOF`,
+         avg_trip_length,
+         foraging_days,
+         hive.y,
+         Date,
+         AFE)%>%
+  mutate(Treatment = paste(Week, MR_type))%>%
+  mutate(Treatment = as.factor(Treatment),
+         Week = as.factor(Week))%>%
+rename(Number = Number.x)
+
+#filter data
+##Fix a duplication error
+Master.Data.groups <- Master.Data.groups%>%
+      filter(!(meanVCO2perG < 48.328 & meanVCO2perG > 48.326))%>%
+      filter(!(meanVCO2perG < 29.384 & meanVCO2perG > 29.382))
+##filter out outliers. see further down this script for reasons
+Master.Data.groups <- Master.Data.groups%>%
+  filter(!(Number == "W43" & Week == "W1" & MR_type == "Rest"))%>%
+  filter(!(Number == "W42" & Week == "W1" & MR_type == "Rest"))%>%
+  filter(!(Number == "W17" & Week == "W1" & MR_type == "Rest"))%>%
+  filter(!(Number == "W4" & Week == "W1" & MR_type == "Rest"))%>%
+  filter(!(Number == "W6" & Week == "W1" & MR_type == "Rest"))%>%
+  filter(!(Number == "W11" & Week == "W1" & MR_type == "Rest"))
+```
+
+```{r}
+Master.Data.groups <- Master.Data.groups%>% 
+  filter(Treatment == "W3 Rest" | Treatment == "W1 Rest")
+
+Master.Data.groups.test <- Master.Data.groups%>% 
+  filter(Treatment == "W3 Rest" & Treatment == "W1 Rest")
+```
+
+##Wide Form Dataframe
+```{r}
+#create wide data frame
+Master.Data.Wide <- Master.Data.groups%>%
+  pivot_wider(id_cols = "Number",
+              names_from = Treatment,
+              values_from = meanVCO2perG)%>%
+  rename( W3Rest = `W3 Rest`,
+          W1Rest = `W1 Rest`)%>%
+  unnest()
+#combine behavioral and mr wide data
+Master.Data.groups.test <- Master.Data.groups %>% 
+  select("Number",
+         "lifespan",
+         "trips_per_day",
+         "AOF",
+         "avg_trip_length",
+         "foraging_days",
+         "hive.y",
+         "Date",
+         "AFE")
+Master.Data.Wide <- left_join(Master.Data.Wide,
+                              Master.Data.groups.test,
+                              ID = "Number")%>%
+                    distinct()
+
+Master.Data.Wide <- Master.Data.Wide%>%
+  mutate(Date.y = mdy(Date))
+
+#Save Wide Dataframe
+write_csv(Master.Data.Wide, "Master.Data.Wide.csv")
+
+#Wide data with only bees that have a MR for each of the 4 treatments
+Master.Data.Wide.individual<- Master.Data.Wide %>% 
+  dplyr::select(Number, W3Rest, W1Rest) %>%
+  drop_na()
+
+#Test for outliers in W1Rest -> 6 OUTLIERS: "W42", "W43", "W17", "W4", "W6", "W11"
+out.w1 <- boxplot.stats(Master.Data.Wide$W1Rest)$out
+out.ind.w1 <- which(Master.Data.Wide$W1Rest %in% c(out.w1))
+out.ind.w1
+#This table gives us all of the entries that the boxplot() function deems an outlier
+Master.Data.Wide[out.ind.w1,]
+
+#Test for outliers in W1Rest -> NO OUTLIERS
+out.w3 <- boxplot.stats(Master.Data.Wide$W3Rest)$out
+out.ind.w3 <- which(Master.Data.Wide$W3Rest %in% c(out))
+out.ind.w3
+Master.Data.Wide[out.ind.w3,]
+```
+#Stats
+##Max MR vs Resting MR
+```{r}
+Master.Data.groups.sum <- group_by(Master.Data.groups, MR_type, Week)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(meanVCO2perG),
+    sd = sd(meanVCO2perG),
+    se = sd(meanVCO2perG)/sqrt(n()))
+```
+
+##Correlation Analyses
+```{r}
+#select variables of interest
+Master.Data.Wide.Corr <- Master.Data.Wide %>%
+    select(-Number, -Date, -Date.y, -hive.y)%>%
+  drop_na()
+
+#Correlation matrix
+p <- ggpairs(Master.Data.Wide.Corr,  
+        columns = c( 1, 4, 5, 6, 7, 8, 9),
+        columnLabels = c("W3 RMR", "W1 RMR", "Lifespan","Trips/Day", "AOF","Trip Length", "ForageDays" ),
+        rowLabels = c("W3 RMR", "W1 RMR", "Lifespan","Trips/Day", "AOF","Trip Length", "ForageDays" ),
+        upper = list(continuous = wrap("cor", size = 3, method = "spearman")))
+p <- p + theme(
+  axis.text = element_text(size = 6),
+  axis.title = element_text(size = 6),
+  axis.title.x = element_text(size = 4),
+  axis.title.y = element_text(size = 4))
+p
+
+#Save plot
+ggsave("correlation.matrix.jpeg", p, dpi = 500)
+
+#Table Visualization
+rcorr <- rcorr(as.matrix(Master.Data.Wide.Corr))
+coeff = round(rcorr$r, 3)
+p.value = round(rcorr$P, 4)
+n = rcorr[["n"]]
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+cor.table <- flattenCorrMatrix(coeff, p.value)
+View(cor.table)
+
+#pairwise Pearson's product-moment correlation
+##Behavior + Life History
+tpd.ls <- cor.test(Master.Data.Wide.Corr$trips_per_day, Master.Data.Wide.Corr$lifespan)
+atl.ls <- cor.test(Master.Data.Wide.Corr$avg_trip_length, Master.Data.Wide.Corr$lifespan)
+tpd.atl <- cor.test(Master.Data.Wide.Corr$trips_per_day, Master.Data.Wide.Corr$avg_trip_length)
+aof.ls <- cor.test(Master.Data.Wide.Corr$AOF, Master.Data.Wide.Corr$lifespan)
+fd.atl <- cor.test(Master.Data.Wide$foraging_days, Master.Data.Wide$avg_trip_length)
+fd.ls <- cor.test(Master.Data.Wide$foraging_days, Master.Data.Wide$lifespan)
+aof.AFE <- cor.test(Master.Data.Wide.Corr$AOF, Master.Data.Wide.Corr$AFE)
+ls.AFE <- cor.test(Master.Data.Wide.Corr$lifespan, Master.Data.Wide.Corr$AFE)
+
+##MR
+tpd.w3r <- cor.test(Master.Data.Wide.Corr$trips_per_day, Master.Data.Wide.Corr$W3Rest)
+tpd.w3r
+aof.w1r <- cor.test(Master.Data.Wide.Corr$AOF, Master.Data.Wide.Corr$W1Rest)
+aof.w1r # Significant
+aof.w3r <- cor.test(Master.Data.Wide.Corr$AOF, Master.Data.Wide.Corr$W3Rest)
+aof.w3r 
+ls.w3r <- cor.test(Master.Data.Wide.Corr$lifespan, Master.Data.Wide.Corr$W3Rest)
+ls.w3r 
+ls.w1r <- cor.test(Master.Data.Wide.Corr$lifespan, Master.Data.Wide.Corr$W1Rest)
+ls.w1r # Significant
+w1r.w3r <- cor.test(Master.Data.Wide.rpt$W1Rest, Master.Data.Wide.rpt$W3Rest)
+w1r.w3r
+```
+
+##Visualize: Pairwise Regression Plots
+```{r}
+#AOF vs lifespan
+aof.ls.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = AOF, y = lifespan))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth(method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.3,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("AOF")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+aof.ls.plot
+
+#AOF vs AFE
+aof.afe.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = AFE, y = AOF))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth(method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("AFE")+
+  ylab("AOF")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+aof.afe.plot
+
+#Lifespan vs AFE
+afe.ls.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = AFE, y = lifespan))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth(method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.3,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("AFE")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+afe.ls.plot
+
+#AOF vs W1Rest
+aof.w1r.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = W1Rest, y = AOF , na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Week 1 RMR (mW/g)")+
+  ylab("AOF")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+aof.w1r.plot
+
+#AOF vs W3Rest
+aof.w3r.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = W3Rest, y = AOF , na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Week 3 RMR (mW/g)")+
+  ylab("AOF")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+aof.w3r.plot
+
+#Lifespan vs W3Rest
+ls.w3r.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = W3Rest, y = lifespan , na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Week 3 RMR (mW/g)")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+ls.w3r.plot
+
+#Lifespan vs W1Rest
+ls.w1r.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = W1Rest, y = lifespan , na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 65), breaks = pretty_breaks()) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Week 1 RMR (mW/g)")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+ls.w1r.plot
+
+#foraging_days vs Average_trip_length
+atl.fd.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = avg_trip_length, y =  foraging_days, na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.1,
+  label.y.npc = 0.9)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+  scale_y_continuous(expand = c(0, 0), limits =c(0, 11), breaks= pretty_breaks())+
+   xlab("Trip Length (min)")+
+  ylab("Number of Foraging Days")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+atl.fd.plot 
+
+#foraging_days vs lifespan
+fd.ls.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = foraging_days, y = lifespan, na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.08)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 11), breaks= pretty_breaks()) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Number of Foraging Days")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+fd.ls.plot
+
+#Ggarrange graph for Behavior and Life History
+plot.grid.beh.lh <- ggarrange(aof.ls.plot,
+                       fd.ls.plot,
+                       atl.fd.plot,
+                       widths = c(1, 1, 1, 1),
+                       labels = c("a)","b)", "c)"))
+
+plot.grid.mr <- ggarrange(ls.w1r.plot,
+                          aof.w1r.plot,
+                          ls.w3r.plot,
+                          aof.w3r.plot,
+                       widths = c(1, 1, 1, 1))
+#Save Plots
+ggsave("regression.plot.grid.pdf",
+       plot.grid.beh.lh, width = 7,
+       bg = "transparent",
+       height = 5, 
+       dpi = 500)
+ggsave("regression.plot.grid.mr.pdf",
+       plot.grid.mr, width = 7,
+       bg = "transparent",
+       height = 5, 
+       dpi = 500)
+```
+
+##Repeatability Analyses
+###Assumptions
+```{r}
+shapiro.test(Master.Data.group.ls$meanVCO2perG)
+ggdensity(Master.Data.group.ls$meanVCO2perG)
+ggqqplot(Master.Data.group.ls$meanVCO2perG)
+```
+###Wrangle Data
+```{r}
+Master.Data.group.ls <- Master.Data.group.ls%>%
+  mutate(Number = as.factor(Number),
+         Week = as.factor(Week),
+         logRMR = log(meanVCO2perG))
+
+Master.Data.All.rpt <- Master.Data.All%>%
+  mutate(Date.y = mdy(Date.y))%>%
+  dplyr::rename(Number = Number.x)
+
+Master.Data.All.rpt <- left_join(Master.Data.group.ls, Master.Data.All.rpt, by = c("Number", "lifespan", "Date.y", "AOF", "meanVCO2perG"))%>%
+  filter(MR_type == "Rest")
+
+Master.Data.All.rpt<- Master.Data.All.rpt%>%
+  mutate(hive.x = as.factor(hive.x))
+```
+###Mixed models approach
+```{r}
+#Repeatability using a generalized mixed model with random variables
+rpt.week <- rpt(logRMR ~ (1|Number) + Week.y + (1|Date.y) + (1|hive.x), grname = c("Number", "Date.y", "hive.x"), data = Master.Data.All.rpt, datatype = "Gaussian", nboot = 0)
+print(rpt.week)
+r <- rpt.week$R
+summary(rpt.week)
+plot(rpt.week, type = "boot")
+rpt.week$mod
+
+#Example
+set.seed(1)
+tmp = rnorm(n = 20)
+df.slopes = tibble(
+  condition = rep(1:2, each = 20), 
+  participant = rep(1:20, 2),
+  value = ifelse(condition == 1, tmp,
+                 mean(tmp) + rnorm(n = 20, sd = 0.3))) %>% 
+  mutate(condition = as.factor(condition),
+         participant = as.factor(participant))
+summary(lmer(value ~ (1|participant) + condition, data = df.slopes))
+lmer.week <- lmer(logRMR ~ (1|Number) + Week.y + (1|Date.y) + (1|hive.x), data = Master.Data.All.rpt)
+lmer.week <- lmer(logRMR ~ Number + Week.y + (1|Date.y) + (1|hive.x), data = Master.Data.All.rpt)
+summary(lmer.week)
+print(lmer.week)
+plot(lmer.week)
+Anova(lmer.week, type = 3)
+tt <- getME(lmer.week,"theta")
+ll <- getME(lmer.week,"lower")
+#compute a model where the effect of status is estimated
+unrestricted_fit = lmer(
+    formula = meanVCO2perG ~ (1|Number) + Week,
+    REML = F,#because we want to compare models on likelihood
+    data = Master.Data.group.ls
+)
+#next, compute a model where the effect of status is not estimated
+restricted_fit = lmer(
+    formula = meanVCO2perG ~ (1|Number),
+    REML = F,#because we want to compare models on likelihood
+    data = Master.Data.group.ls
+)
+#compute the AIC-corrected log-base-2 likelihood ratio (a.k.a. "bits" of evidence)
+(AIC(restricted_fit)-AIC(unrestricted_fit))*log2(exp(1))
+```
+###ICC
+```{r}
+#Another way of looking at ICC or RC
+G29 <- c(58.1, 19.8)
+G13 <- c(70.9, 39.4)
+G10 <- c(69.2, 19.9)
+G39 <- c(55.9, 38.4)
+G7 <- c(29.6, 31.2)
+G46 <- c(70.47129, 15.17253)
+R23 <- c(67.1670594, 3.0000853)
+R22 <- c(72.8408377, 51.3652348)
+R26 <- c(75.8243956, 38.4159251)
+G38 <- c(34.9161835, 27.3208981)
+B18 <- c(55.9326068, 20.8896432)
+B39 <- c(39.0639792, 0.4151172)
+Y5 <- c(16.2699762, 15.2065914)
+Y14 <- c(5.5356794, 50.5439740)
+Y19 <- c(54.0316826, 51.8523081)
+
+# Within-subject sample variances
+var_1 <- var(G29)
+var_2 <- var(G13)
+var_3 <- var(G10)
+var_4 <- var(G39)
+var_5 <- var(G7)
+var_6 <- var(G46)
+var_7 <- var(R23)
+var_8 <- var(R22)
+var_9 <- var(R26)
+var_10 <- var(G38)
+var_11 <- var(B18)
+var_12 <- var(B39)
+var_13 <- var(Y5)
+var_14 <- var(Y14)
+var_15 <- var(Y19)
+# Mean within-subject sample variance
+var_w <- mean(c(var_1, var_2, var_3, var_4, var_5, var_6, var_7, var_8, var_9, var_10, var_11, var_12, var_13, var_14, var_15))
+# Within-subject sample standard deviation
+s_w <- sqrt(var_w)
+# Coefficient of repeatability
+rc <- 1.96 * sqrt(2) * s_w
+print(rc)
+
+Master.Data.Wide.rpt <- Master.Data.Wide.rpt%>%
+  select("W1Rest", "W3Rest")
+icc.rpt <- ICC(Master.Data.Wide.rpt, lmer = T)
+icc.rpt$summary
+icc.rpt$lme
+
+lm.rpt <- lm(meanVCO2perG ~ Week, Master.Data.group.ls)
+Anova(lm.rpt)
+anova(lm.rpt)
+
+icc(
+  Master.Data.Wide.rpt, model = "oneway", 
+  type = "consistency", unit = "single"
+  )
+```
+###Bland-Altman Plot
+```{r}
+Master.Data.Wide.rpt <- Master.Data.Wide.ls%>%
+  select("W1Rest", "W3Rest", "Number")
+Master.Data.Wide.rpt$avg <- rowMeans(Master.Data.Wide.rpt) 
+#create new column for difference in measurements
+Master.Data.Wide.rpt$diff <- Master.Data.Wide.rpt$W3Rest - Master.Data.Wide.rpt$W1Rest
+mean_diff <- mean(Master.Data.Wide.rpt$diff)
+lower <- mean_diff - 1.96*sd(Master.Data.Wide.rpt$diff)
+lower
+upper <- mean_diff + 1.96*sd(Master.Data.Wide.rpt$diff)
+upper
+
+ggplot(Master.Data.Wide.rpt, aes(x = avg, y = diff)) +
+  geom_point(size=2) +
+  geom_hline(yintercept = mean_diff) +
+  geom_hline(yintercept = lower, color = "red", linetype="dashed") +
+  geom_hline(yintercept = upper, color = "red", linetype="dashed") +
+  ggtitle("Bland-Altman Plot") +
+  ylab("Difference Between Measurements") +
+  xlab("Average Measurement")+
+  theme_pubr()
+```
+
+##Metabolic Rate
+```{r}
+Master.Data.groups.week.sum <- group_by(Master.Data.groups.RMRonly, Week)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(meanVCO2perG),
+    sd = sd(meanVCO2perG),
+    se = sd(meanVCO2perG)/sqrt(n()))
+
+t.test(Master.Data.Wide.rpt$W3Rest, Master.Data.Wide.rpt$W1Rest, paired = F, alternative = "two.sided")
+sd(Master.Data.Wide.aof$W3Rest)
+sd(Master.Data.Wide.aof$W1Rest)
+
+#Question: Do individuals differ in their behavioral plasticity
+Master.Data.Wide.aof <- Master.Data.Wide.aof%>%
+  mutate(response = W3Rest - W1Rest,
+         Number = as.factor(Number))
+
+lm.response <- lm(response ~ Number, data = Master.Data.Wide.aof)
+summary(lm.response)
+plot(lm.response)
+```
+###Effect of Treatment on meanVCO2perG
+```{r}
+#Ask the question: Do different treatments explain MR values?
+lm.VCO2.treatment <- lm(meanVCO2perG ~ Treatment, data = Master.Data.groups)
+summary(lm.VCO2.treatment)
+anova(lm.VCO2.treatment)
+emmeans(lm.VCO2.treatment, pairwise ~ Treatment)
+
+#Shake Only
+w1shake.w3shake.ls <- Master.Data.groups%>% 
+  filter(Treatment == "W3 Shake" | Treatment == "W1 Shake")%>%
+  drop_na()
+lm.VCO2.treatment.shake <- lm(meanVCO2perG ~ Treatment, data = w1shake.w3shake.ls)
+summary(lm.VCO2.treatment.shake)
+anova(lm.VCO2.treatment.shake)
+emmeans(lm.VCO2.treatment.shake, pairwise ~ Treatment)
+```
+###Effect of Week on meanVCO2perG
+```{r}
+#Question: Does week explain MR?
+Master.Data.groups.week <- Master.Data.groups %>%
+  select("Number", "Week", "Treatment", "meanVCO2perG")%>%
+  drop_na()
+lm.VCO2.week <- lm(meanVCO2perG ~ Week, data = Master.Data.groups.week)
+summary(lm.VCO2.week)
+anova(lm.VCO2.week)
+emmeans(lm.VCO2.week, pairwise ~ Week)
+```
+###Effect of MR_type on meanVCO2perG
+```{r}
+#Question: Does MR_type explain MR?
+Master.Data.groups.MR_type <- Master.Data.groups %>%
+  select("Number", "MR_type", "Treatment", "meanVCO2perG")%>%
+  drop_na()
+lm.VCO2.MRtype <- lm(meanVCO2perG ~ MR_type, data = Master.Data.groups.MR_type)
+summary(lm.VCO2.MRtype)
+anova(lm.VCO2.MRtype)
+emmeans(lm.VCO2.MRtype, pairwise ~ MR_type)
+```
+###Visualize
+```{r}
+#filter dataframe for variables of interest
+Master.Data.Wide.rpt <- Master.Data.Wide%>%
+  select("lifespan", "W3Rest", "W1Rest", "Number", "Date.y", "AOF")%>%
+  drop_na(W1Rest,
+          W3Rest)
+
+#Pivot dataframe back to long form
+Master.Data.groups.rpt <- pivot_longer(Master.Data.Wide.rpt,
+                                     cols = starts_with("W"),
+                                     names_to = "Week",
+                                     values_to = "meanVCO2perG",
+                                     values_drop_na = T)
+
+position_jitterdodge(
+  jitter.width = NULL,
+  jitter.height = 0,
+  dodge.width = 0.5,
+  seed = NA
+)
+
+#Boxplot with jitter 
+mr.box.plot <-ggplot(Master.Data.group.ls, aes (x = Week, y = meanVCO2perG)) +
+  geom_boxplot(alpha = 0.5) +
+  geom_point(aes(fill=Week, group=Number),size=2,shape=21, position = position_dodge(0.5)) +
+  stat_summary(fun.y=mean, geom="point", shape=18, size=5, color="#456355", fill="white")+
+  theme_pubr()+
+  theme(text = element_text(size = 12))+
+  theme(legend.title = element_blank())+
+  theme(legend.position="none")+
+  scale_color_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_fill_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_x_discrete(breaks=c("W1Rest","W3Rest"),
+        labels=c("Week 1", "Week 3"))+
+  coord_cartesian(clip = "off")+
+  ylab("RMR (mW/G)")+
+  xlab("")
+mr.box.plot
+
+#Boxplot with jitter and connect
+mr.box.plot.connect <-ggplot(Master.Data.group.ls, aes (x = Week, y = meanVCO2perG)) +
+  geom_boxplot(alpha = 0.5) +
+  geom_point(aes(fill=Week, group=Number),size=2,shape=21, position = position_dodge(0.5))+
+  geom_line(aes(group=Number),
+            linetype = 2,
+            alpha = 0.5,
+            position = position_dodge(0.5)) +
+  stat_summary(fun.y=mean, geom="point", shape=18, size=5, color="#456355", fill="white")+
+  theme_pubr()+
+  theme(text = element_text(size = 12))+
+  theme(legend.title = element_blank())+
+  theme(legend.position="none")+
+  scale_color_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_fill_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_x_discrete(breaks=c("W1Rest","W3Rest"),
+        labels=c("Week 1", "Week 3"))+
+  coord_cartesian(clip = "off")+
+  ylab("RMR (mW/G)")+
+  xlab("")
+mr.box.plot.connect
+
+#Boxplots with connected individuals
+mr.plot.connections <-ggplot(Master.Data.group.ls, aes (x = Week, y = meanVCO2perG)) +
+  geom_line(aes(group=Number),
+            linetype = 2,
+            alpha = 0.5,
+            position = position_dodge(0.5)) +
+  geom_point(aes(fill=Week, group=Number),size=2,shape=21, position = position_dodge(0.5))+
+  theme_pubr()+
+  theme(text = element_text(size = 12))+
+  theme(legend.title = element_blank())+
+  theme(legend.position="none")+
+  scale_fill_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_x_discrete(breaks=c("W1Rest","W3Rest"),
+        labels=c("Week 1", "Week 3"))+
+  coord_cartesian(clip = "off")+
+  ylab("RMR (mW/G)")+
+  xlab("")
+mr.plot.connections
+
+#W1Rest vs W3Rest
+w1r.W3r.plot <- ggplot(data = Master.Data.Wide.Corr, aes(x = W1Rest, y = W3Rest , na.rm = T))+
+  geom_point(shape = 21, color = "black", fill = "#F2CC84", size = 2)+
+  geom_smooth( method="lm" , color="black", fill="grey", se=TRUE)+
+  stat_cor(method = "pearson", label.x.npc = 0.4,
+  label.y.npc = 0.05)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA), breaks = pretty_breaks()) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("Week 1 RMR (mW/g)")+
+  ylab("Week 3 RMR (mW/g)")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  coord_cartesian(clip = "off")
+w1r.W3r.plot
+
+
+plot.grid.mr.type <- ggarrange(mr.box.plot,
+                          w1r.W3r.plot,
+                       widths = c(1, 1, 1, 1),
+                       labels = c("a)", "b)"))
+
+ggsave("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Writing/plots/regression.plot.grid.mr.type.pdf",
+       plot.grid.mr.type, width = 6,
+       bg = "transparent",
+       height = 3, 
+       dpi = 500)
+
+ggsave("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Writing/plots/mr.box.plot.pdf",
+       mr.box.plot, width = 5,
+       bg = "transparent",
+       height = 3, 
+       dpi = 500)
+
+ggsave("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Writing/plots/mr.plot.connections.pdf",
+       mr.plot.connections, width = 5,
+       bg = "transparent",
+       height = 3, 
+       dpi = 500)
+```
+##Lifespan
+###Sum Stats
+```{r}
+#all bees
+ls.all <- Master.Data.Wide%>%
+  select("lifespan")%>%
+  drop_na()
+ls.sum.stats.all <- ls.all%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(ls.all$lifespan),
+    sd = sd(ls.all$lifespan),
+    se = sd(ls.all$lifespan)/sqrt(n()))
+
+#Only foragers
+ls.foragers <- Master.Data.Wide%>%
+  select("lifespan", "AOF", "Number", "avg_trip_length", "trips_per_day", "foraging_days", "AFE", "W1Rest", "W3Rest")%>%
+  drop_na(AOF)
+ls.sum.stats.foragers <- ls.foragers%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(lifespan),
+    sd = sd(lifespan),
+    se = sd(lifespan)/sqrt(n()))
+```
+###lm with long form data. Not sure if this is meaningful
+```{r}
+lm.ls.VCO2 <- lm(lifespan ~ meanVCO2perG, data = Master.Data.groups)
+summary(lm.ls.VCO2)
+anova(lm.ls.VCO2)
+emmeans(lm.ls.VCO2, pairwise ~ Week)
+pairs(emmeans(lm.ls.VCO2, pairwise ~ Week))
+```
+
+```{r}
+#Question: Does meanVCO2 effect Lifespan differently for each treatment?
+##Interaction between meanVCO2perG and Treatment
+Master.Data.groups.ls <- Master.Data.groups.RMRonly %>%
+  select("Number", "lifespan", "Treatment", "meanVCO2perG")%>%
+  drop_na()
+lm.ls <- lm(lifespan ~ Treatment*meanVCO2perG, data = Master.Data.groups.ls)
+summary(lm.ls)
+anova(lm.ls)
+emmeans(lm.ls, pairwise ~ Treatment)
+
+#Question: Does meanVCO2 effect Lifespan differently for each week?
+##Interaction between meanVCO2perG and Treatment
+Master.Data.groups.wk.ls <- Master.Data.groups.RMRonly %>%
+  select("Number", "Week", "Treatment", "meanVCO2perG", "lifespan")%>%
+  drop_na()
+lm.ls.week <- lm(lifespan ~ Week*meanVCO2perG, data = Master.Data.groups.wk.ls)
+summary(lm.ls.week)
+Anova(lm.ls.week, type = 3)
+emmeans(lm.ls.week, pairwise ~ Week)
+
+#Only shake treatments in the dataframe
+##Asking the question: Does meanVCO2 effect Lifespan differently for each treatment?
+w1shake.w3shake.ls <- Master.Data.groups%>% 
+  filter(Treatment == "W3 Shake" | Treatment == "W1 Shake")%>%
+  drop_na()
+lm.ls.shake <- lm(lifespan ~ Treatment*meanVCO2perG, data = w1shake.w3shake.ls)
+summary(lm.ls.shake)
+anova(lm.ls.shake)
+emmeans(lm.ls.shake, pairwise ~ Treatment)
+
+#Only Rest Treatments in the dataframe
+w1rest.w3rest.ls <- Master.Data.groups%>% 
+  filter(Treatment == "W3 Rest" | Treatment == "W1 Rest")%>%
+  drop_na()
+lm.ls.rest <- lm(lifespan ~ Treatment*meanVCO2perG, data = w1shake.w3shake.ls)
+summary(lm.ls.rest)
+anova(lm.ls.rest)
+emmeans(lm.ls.rest, pairwise ~ Treatment)
+```
+###lm with wide form data
+```{r}
+#n = 17
+Master.Data.Wide.ls <- Master.Data.Wide%>%
+  select("lifespan", "W3Rest", "W1Rest", "Number", "Date.y", "AOF")%>%
+  drop_na(AOF)
+
+lm.ls <- lm(lifespan ~ W3Rest + W1Rest, data = Master.Data.Wide.ls)
+plot(lm.ls)#create a model with all variables
+shapiro.test(Master.Data.Wide.ls$lifespan)
+summary(lm.ls)
+Anova(lm.ls, type = 2)
+options(na.action = "na.fail") 
+dredge(lm.ls) #use AIC to find best model
+options(na.action = "na.omit")
+
+#Same thing as above but only with bees that have a measurement for each treatment
+Master.Data.Wide.ls.Drop.NA<- Master.Data.Wide %>% 
+  dplyr::select(Number,
+                W3Rest,
+                W3Shake,
+                W1Rest,
+                W1Shake,
+                lifespan) %>%
+  drop_na()
+
+lm.ls.drop.NA <- lm(lifespan ~ W3Rest  + W1Rest , data = Master.Data.Wide.ls.Drop.NA)
+summary(lm.ls.drop.NA)
+anova(lm.ls.drop.NA)
+emmeans(lm.ls.drop.NA)
+```
+###Visualize
+```{r}
+#filter dataframe for variables of interest
+Master.Data.Wide.ls <- Master.Data.Wide%>%
+  select("lifespan", "W3Rest", "W1Rest", "Number", "Date.y", "AOF")%>%
+  drop_na()
+
+#Pivot dataframe back to long form
+Master.Data.group.ls <- pivot_longer(Master.Data.Wide.ls,
+                                     cols = starts_with("W"),
+                                     names_to = "Week",
+                                     values_to = "meanVCO2perG",
+                                     values_drop_na = T)
+
+#Plot
+plot.lm.ls <- ggplot(Master.Data.group.ls , aes(x = meanVCO2perG, y =  lifespan, color = Week)) +
+  geom_point(shape = 21, color = "black", aes(fill = Week), size = 2) +
+  geom_smooth(method = "lm", se=T, aes(fill = Week), alpha = 0.2) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 60)) +
+   xlab("RMR (W/g)")+
+  ylab("Lifespan")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  theme(legend.title = element_blank())+
+  scale_color_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_fill_manual(values = c("#E6A2C5", "#7496D2"))+
+   coord_cartesian(clip = "off")
+plot.lm.ls
+
+#save plot
+ggsave("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Writing/plots/plot.lm.ls.pdf", 
+       plot.lm.ls,
+       width = 7,
+       bg = "transparent",
+       height = 5, 
+       dpi = 500)
+
+###COME BACK TO THIS######
+ggplot(w1shake.w3shake.ls) +
+  geom_jitter(aes(x=Date.y, y= lifespan, color = Treatment))+
+  geom_smooth(method=lm, aes(x=Date.y, y= lifespan, color = Treatment))+
+  theme_bw()
+```
+
+##Average trip length (NO SIGNIFICANCE)
+###Sum Stats
+```{r}
+#all bees
+atl.all <- Master.Data.Wide%>%
+  select("avg_trip_length")%>%
+  drop_na()
+atl.sum.stats.all <- atl.all%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(avg_trip_length),
+    sd = sd(avg_trip_length),
+    se = sd(avg_trip_length)/sqrt(n()))
+
+#Only foragers
+atl.foragers <- Master.Data.Wide%>%
+  select("avg_trip_length", "AOF", "W1Rest", "W3Rest")%>%
+  drop_na(AOF)
+atl.sum.stats.foragers <- atl.foragers%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(avg_trip_length),
+    sd = sd(avg_trip_length),
+    se = sd(avg_trip_length)/sqrt(n()))
+
+#Remove outlier
+atl.foragers <- atl.foragers[-c(19),]
+```
+###lm
+```{r}
+lm.trip.length <- lm(avg_trip_length ~ W1Rest + W3Rest, data = atl.foragers)
+plot(lm.trip.length)
+shapiro.test(atl.foragers$avg_trip_length)
+summary(lm.trip.length)
+anova(lm.trip.length)
+dredge(lm.trip.length)
+```
+
+##Average trips per day
+###Sum Stats
+```{r}
+#all bees
+tpd.all <- Master.Data.Wide%>%
+  select("trips_per_day")%>%
+  drop_na()
+tpd.sum.stats.all <- tpd.all%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(trips_per_day),
+    sd = sd(trips_per_day),
+    se = sd(trips_per_day)/sqrt(n()))
+
+#Only foragers
+tpd.foragers <- Master.Data.Wide%>%
+  select("lifespan", "AOF", "Number", "avg_trip_length", "trips_per_day", "foraging_days", "AFE", "W1Rest", "W3Rest")%>%
+  drop_na(AOF)
+tpd.sum.stats.foragers <- tpd.foragers%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(trips_per_day),
+    sd = sd(trips_per_day),
+    se = sd(trips_per_day)/sqrt(n()))
+```
+###lm
+```{r}
+lm.trips <- lm(trips_per_day ~ W3Rest + W1Rest , data = tbd.foragers)
+summary(lm.trips)
+plot(lm.trips)
+Anova(lm.trips, type = 2)
+dredge(lm.trips)
+lm.trips.aic <- lm(trips_per_day ~ W3Rest + W1Rest , data = Master.Data.Wide)
+summary(lm.trips.aic)
+Anova(lm.trips.aic, type = 2)#RMR is the better predictor of variation in the amount of trips per day that these bees will do (W3Rest is significant with p value of 0.0423)
+```
+###Visualize
+```{r}
+#filter dataframe for variables of interest
+Master.Data.Wide.tpd <- Master.Data.Wide %>%
+  select("W3Rest", "W3Shake","W1Rest", "W1Shake", "trips_per_day", "Number")
+
+Master.Data.Wide.tpd <- Master.Data.Wide.tpd %>% drop_na()
+
+#Pivot dataframe back to long form
+Master.Data.group.tpd <- pivot_longer(Master.Data.Wide.tpd,
+                                     cols = starts_with("W"),
+                                     names_to = "Treatment",
+                                     values_to = "meanVCO2perG",
+                                     values_drop_na = T)
+
+w1rest.w3rest.trips <- Master.Data.group.tpd%>% 
+  filter(Treatment == "W3Rest" | Treatment == "W1Rest")%>%
+  drop_na()
+
+
+
+#Plot
+plot.lm.trips <- ggplot(w1rest.w3rest.trips, aes(x = meanVCO2perG, y = trips_per_day, color = Treatment))+
+  geom_point()+
+  geom_smooth(method = "lm", se=T, aes(fill = Treatment))+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+   xlab("RMR (W/g)")+
+  ylab("Average Trips per Day")+
+  theme_classic()+
+  theme(text = element_text(size = 14))+
+  theme(legend.title = element_blank())
+plot.lm.trips
+
+#save
+ggsave("/Users/jcassano/Desktop/Masters Thesis/Summer 2021/Writing/plots/plot.lm.tpd.pdf", 
+       plot.lm.trips,
+       width = 7,
+       bg = "transparent",
+       height = 5, 
+       dpi = 500)
+```
+
+##Age at Onset of Foraging
+```{r}
+aof.foragers <- Master.Data.Wide%>%
+  select("lifespan", "AOF", "Number", "avg_trip_length", "trips_per_day", "foraging_days", "AFE", "W1Rest", "W3Rest")%>%
+  drop_na(AOF)
+
+lm.AOF <- lm(AOF ~ W3Rest + W1Rest , data = Master.Data.Wide)
+options(na.action = na.omit)
+dredge(lm.AOF)
+plot(lm.AOF)
+shapiro.test(aof.foragers$AOF)
+summary(lm.AOF )
+Anova(lm.AOF, type = 2 )
+```
+###Visualize AOF
+```{r}
+###filter dataframe for variabls of interest
+Master.Data.Wide.aof <- Master.Data.Wide %>%
+  select("W3Rest","W1Rest", "AOF", "Number", "lifespan")%>% 
+  drop_na()
+
+#Pivot dataframe back to long form
+Master.Data.group.aof <- pivot_longer(Master.Data.Wide.aof,
+                                     cols = starts_with("W"),
+                                     names_to = "Week",
+                                     values_to = "meanVCO2perG",
+                                     values_drop_na = T)
+
+
+
+#average AOF
+mean(Master.Data.Wide.aof$AOF)
+length(Master.Data.Wide.aof$AOF)
+sd(Master.Data.Wide.aof$AOF)
+
+##Plot
+
+plot.lm.aof <- ggplot(Master.Data.group.aof , aes(x = meanVCO2perG, y =  AOF, color = Week)) +
+  geom_point(shape = 21, color = "black", aes(fill = Week), size = 2) +
+  geom_smooth(method = "lm", se=T, aes(fill = Week), alpha = 0.2) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 80)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 60)) +
+   xlab("RMR (W/g)")+
+  ylab("AOF")+
+  theme_classic()+
+  theme(text = element_text(size = 12))+
+  theme(legend.title = element_blank())+
+  scale_color_manual(values = c("#E6A2C5", "#7496D2"))+
+  scale_fill_manual(values = c("#E6A2C5", "#7496D2"))+
+   coord_cartesian(clip = "off")
+plot.lm.aof
+
+
+plot.lm.grid <- ggarrange(plot.lm.aof, 
+          plot.lm.ls, 
+          common.legend = TRUE,
+          widths = c(1, 1, 1, 1))
+
+#save plot
+ggsave("plot.lm.grid.pdf", 
+       plot.lm.grid,
+       width = 6,
+       bg = "transparent",
+       height = 3, 
+       dpi = 500)
+```
+
+##Age at First Exit
+```{r}
+afe.foragers <- Master.Data.Wide%>%
+  select("lifespan", "AOF", "Number", "avg_trip_length", "trips_per_day", "foraging_days", "AFE", "W1Rest", "W3Rest", "AFE")%>%
+  drop_na(AOF)
+
+mean(afe.foragers$AFE)
+sd(afe.foragers$AFE)
+length(afe.foragers$AFE)
+
+lm.afe <- lm(AFE ~ W3Rest + W1Rest , data = afe.foragers)
+options(na.action = na.omit)
+dredge(lm.AOF)
+plot(lm.afe)
+shapiro.test(afe.foragers$AFE)
+summary(lm.afe )
+Anova(lm.afe, type = 2 )
+```
+
+##Foraging days
+###Sum Stats
+```{r}
+#all bees
+fd.foragers <- Master.Data.Wide%>%
+  select("foraging_days")%>%
+  drop_na()
+fd.sum.stats.foragers <- fd.foragers%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(foraging_days),
+    sd = sd(foraging_days),
+    se = sd(foraging_days)/sqrt(n()))
+
+#Only foragers
+fd.foragers <- Master.Data.Wide%>%
+  select("lifespan", "AOF", "Number", "avg_trip_length", "trips_per_day", "foraging_days", "AFE", "W1Rest", "W3Rest")%>%
+  drop_na(AOF)
+
+tpd.sum.stats.foragers <- tpd.foragers%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(foraging_days),
+    sd = sd(foraging_days),
+    se = sd(foraging_days)/sqrt(n()))
+```
+
+
+```{r}
+lm.fd <- lm(foraging_days ~ W3Rest +  W1Rest , data = fd.foragers)
+plot(lm.AOF)
+shapiro.test(aof.foragers$foraging_days)
+summary(lm.fd)
+Anova(lm.fd, type = 2)
+```
+
+
+#Miscellanous
+```{r}
+#Week
+lm <- lm(lifespan ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+lm <- lm(avg_trip_length ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+lm <- lm(trips_per_day ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+
+#MR measurement:MMR vs RMR
+lm <- lm(lifespan ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+lm <- lm(avg_trip_length ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+lm <- lm(trips_per_day ~ mean_W1 + mean_W3, data = Master.Data.Wide)
+summary(lm)
+anova(lm)
+```
+
+
+```{r}
+Master.Data.groups.ls <- Master.Data.groups%>%
+subset(Treatment!= "W3 Rest" & Treatment!= "W3 Shake")
+
+ggplot(data = Master.Data.groups.ls)+
+  geom_point(aes(x= meanVCO2perG, y = lifespan, color = Treatment))+
+  geom_smooth(aes(x= meanVCO2perG, y = lifespan), method = "lm")
+
+```
+
+```{r}
+#chopping data frame up into lists of dataframes by treatment
+Master.Data.groups.list <- Master.Data.groups%>%
+  group_by(Treatment)%>%
+  group_split()
+W1.Rest <- Master.Data.groups.list[[1]]
+W1.Shake <- Master.Data.groups.list[[2]]
+W3.Rest <- Master.Data.groups.list[[3]]
+W3.Shake <- Master.Data.groups.list[[4]]
+
+#Group coorelation analysis
+##visualize
+ggpairs(Master.Data.groups,  ggplot2::aes(colour=Treatment), 
+        columns = c(2,3,4, 5),
+        upper = list(continuous = wrap("cor", size = 3)))
+##correlation cooeficients
+cor.W1.Rest <- cor(W1.Rest[,c(4, 5, 6, 7)])
+cor.W1.Shake <- cor(W3.Shake[,c(4, 5, 6, 7)])
+cor.W3.Rest <- cor(W1.Rest[,c(4, 5, 6, 7)])
+cor.W3.Shake <- cor(W3.Shake[,c(4, 5, 6, 7)])
+##tibble that bitch
+cor.W1.Rest <- as_tibble(cor.W1.Rest)
+cor.W1.Shake <- as_tibble(cor.W1.Shake)
+cor.W3.Rest <- as_tibble(cor.W3.Rest)
+cor.W3.Shake <- as_tibble(cor.W3.Shake)
+
+##W1 Rest
+cor.test(W1.Rest$meanVCO2perG, W1.Rest$lifespan)
+cor.test(W1.Rest$meanVCO2perG, W1.Rest$trips)
+cor.test(W1.Rest$meanVCO2perG, W1.Rest$avg_trip_length)
+##W1 Shake
+cor.test(W1.Shake$meanVCO2perG, W1.Shake$lifespan)
+cor.test(W1.Shake$meanVCO2perG, W1.Shake$trips)
+cor.test(W1.Shake$meanVCO2perG, W1.Shake$avg_trip_length)
+##W3 Rest
+cor.test(W3.Rest$meanVCO2perG, W3.Rest$lifespan)
+cor.test(W3.Rest$meanVCO2perG, W3.Rest$trips)
+cor.test(W3.Rest$meanVCO2perG, W3.Rest$avg_trip_length)
+##W3 Shake
+cor.test(W3.Shake$meanVCO2perG, W3.Shake$lifespan)
+cor.test(W3.Shake$meanVCO2perG, W3.Shake$trips)
+cor.test(W3.Shake$meanVCO2perG, W3.Shake$avg_trip_length)
+```
