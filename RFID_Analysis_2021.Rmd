@@ -249,7 +249,7 @@ aof.input <- aof.input%>%
 ```{r}
 # run AOF package on aof.input
 require("bcpa")
-AOF <- aof(name = aof.input.$RFID, Age = aof.input$Age, x = aof.input$n) # takes a while
+AOF <- aof(name = aof.input$RFID, Age = aof.input$Age, x = aof.input$n) # takes a while
 View(AOF) 
 #clean AOF data set by only selecting rows that were able to calculate an AOF successfully
 AOF.clean <- AOF %>%
